@@ -34,15 +34,35 @@ const auth = new google.auth.JWT(
 
 const sheets = google.sheets({ version: "v4", auth });
 
+// تحويل الأرقام العربية إلى إنجليزية
+function arabicToEnglishNumber(str) {
+  if (!str) return str;
+  const map = { '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9' };
+  return str.replace(/[٠-٩]/g, d => map[d]);
+}
+
+// تحويل الوقت العربي AM/PM
+function parseArabicTime(timeStr) {
+  if (!timeStr) return "";
+  timeStr = arabicToEnglishNumber(timeStr);
+  if (/ص/i.test(timeStr)) timeStr = timeStr.replace(/ص/i, "AM");
+  else if (/م/i.test(timeStr)) timeStr = timeStr.replace(/م/i, "PM");
+  return timeStr;
+}
+
 // مساعدة: تحويل تاريخ/وقت المحفوظ في الشيت إلى كائن Date
 function parseSheetDateTime(dateStr, timeStr) {
   if (!dateStr) return null;
-  // حاول البناء المباشر
-  try {
-    const direct = new Date(`${dateStr} ${timeStr || ""}`);
-    if (!isNaN(direct)) return direct;
-  } catch (e) {}
-  // عادة التاريخ مخزن بصيغة dd/MM/yyyy أو dd-MM-yyyy
+
+  // تحويل الأرقام العربية
+  dateStr = arabicToEnglishNumber(dateStr);
+  timeStr = parseArabicTime(timeStr);
+
+  // محاولة التحويل المباشر
+  const dt = new Date(`${dateStr} ${timeStr || ""}`);
+  if (!isNaN(dt)) return dt;
+
+  // صيغة dd/MM/yyyy أو dd-MM-yyyy
   const sep = dateStr.includes("/") ? "/" : dateStr.includes("-") ? "-" : null;
   if (sep) {
     const parts = dateStr.split(sep).map(s => s.trim());
@@ -54,17 +74,19 @@ function parseSheetDateTime(dateStr, timeStr) {
       if (timeStr) {
         const t = timeStr.split(":").map(x => parseInt(x, 10) || 0);
         hh = t[0] || 0; mm = t[1] || 0; ss = t[2] || 0;
+        // ضبط AM/PM
+        if (/PM/i.test(timeStr) && hh < 12) hh += 12;
+        if (/AM/i.test(timeStr) && hh === 12) hh = 0;
       }
       return new Date(year, month, day, hh, mm, ss);
     }
   }
-  // فشل التحويل
+
   return null;
 }
 
 // قراءة كل الصفوف من الشيت (باستثناء العنوان)
 async function readAllRows() {
-  // نحصل على كل القيم
   const range = "Users!A:Z";
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
@@ -76,13 +98,11 @@ async function readAllRows() {
   const headers = rows[0].map(h => (h || "").toString().trim());
   const dataRows = rows.slice(1);
   const mapped = dataRows.map(r => {
-    // حدد قيم حسب الأعمدة المتوقعة — لكن نكوّن شيء عام
     const obj = {};
     headers.forEach((h, i) => {
       obj[h || `col${i}`] = r[i] !== undefined ? r[i] : "";
     });
 
-    // نبحث عن حقل التاريخ والوقت وفق أسماء مألوفة
     const dateKeys = ["التاريخ", "Date", "date"];
     const timeKeys = ["الوقت", "Time", "time"];
     const dateKey = headers.find(h => dateKeys.includes(h)) || headers.find(h => /تاريخ/i.test(h)) || null;
@@ -92,7 +112,7 @@ async function readAllRows() {
     const timeStr = timeKey ? obj[timeKey] : "";
 
     const ts = parseSheetDateTime(dateStr, timeStr);
-    obj._timestamp = ts ? ts.toISOString() : null; // ISO string or null
+    obj._timestamp = ts ? ts.toISOString() : null;
 
     return obj;
   });
@@ -106,11 +126,10 @@ function filterByPeriod(rows, period) {
   const now = new Date();
   let since;
   if (period === "today") {
-    since = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // بداية اليوم
+    since = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   } else if (period === "7days") {
     since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   } else if (period === "month") {
-    // آخر 30 يوماً
     since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   } else {
     since = null;
@@ -128,11 +147,10 @@ function filterByPeriod(rows, period) {
 // endpoint: جلب السجلات مع فلترة
 app.get("/entries", async (req, res) => {
   try {
-    const period = req.query.period || "all"; // today, 7days, month, all
+    const period = req.query.period || "all";
     const { headers, data } = await readAllRows();
     const filtered = filterByPeriod(data, period);
 
-    // رتب حسب التاريخ تنازلياً إن أمكن
     filtered.sort((a, b) => {
       const da = a._timestamp ? new Date(a._timestamp) : new Date(0);
       const db = b._timestamp ? new Date(b._timestamp) : new Date(0);
@@ -146,7 +164,7 @@ app.get("/entries", async (req, res) => {
   }
 });
 
-// (اختياري) endpoint لفحص الاتصال
+// endpoint لفحص الاتصال
 app.get("/ping", (req, res) => res.json({ success: true, now: new Date().toISOString() }));
 
 const PORT = process.env.PORT || 5000;
